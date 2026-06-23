@@ -4,7 +4,7 @@ Design notes worth reading before editing:
 
 - BitwardenClient wraps the `bw` CLI via subprocess. Session token lives in
   RAM only (no file, no env persisted beyond the subprocess call). Master
-  password comes from the OS keyring — see docs/bw_setup.md.
+  password comes from the OS keyring — see the README (Credentials setup).
 - Session idle-expires; any op after `idle_minutes` of inactivity re-locks
   and re-unlocks transparently. `lock()` clears the session explicitly.
 - Reads are cached per unlocked session (get_item, list_items). Any write
@@ -64,7 +64,7 @@ def startup_check() -> None:
     if shutil.which(BW_BINARY) is None:
         raise BitwardenError(
             "Bitwarden CLI not found on PATH. "
-            "Run the Phase 0 setup from mcps/autopilot-mcp/docs/bw_setup.md "
+            "Run the Bitwarden setup from the README (Credentials setup) "
             "and restart the MCP."
         )
 
@@ -111,7 +111,7 @@ class LocalBitwardenVault:
         if not master:
             raise BitwardenError(
                 f"no master password in keyring under "
-                f"{KEYRING_SERVICE}/{KEYRING_USERNAME} - see bw_setup.md"
+                f"{KEYRING_SERVICE}/{KEYRING_USERNAME} - see the README"
             )
         path = _local_vault_data_path()
         if not path.exists():
@@ -526,7 +526,7 @@ class BitwardenClient:
         if not master:
             raise BitwardenError(
                 f"no master password in keyring under "
-                f"{KEYRING_SERVICE}/{KEYRING_USERNAME} — see bw_setup.md"
+                f"{KEYRING_SERVICE}/{KEYRING_USERNAME} — see the README"
             )
         env = {**os.environ, "BW_PW": master}
         try:

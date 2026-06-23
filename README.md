@@ -103,15 +103,102 @@ entries reaped on every request. Override the bind via
 6. After the task succeeds, `save_playbook(...)` so next time is one call.
 7. Just signed up somewhere new? `upsert_login(url, username, password)` stores it and Bitwarden sync pushes to your other devices.
 
-## Credentials setup
+## Credentials setup (Bitwarden)
 
-The MCP unlocks Bitwarden via a master password stashed in the OS keyring
-(DPAPI on Windows). See [`docs/bw_setup.md`](docs/bw_setup.md) for the
-one-time setup: install `bw`, `bw login`, `keyring.set_password`, smoke-test.
+The MCP unlocks Bitwarden with a master password stashed in the OS keyring
+(DPAPI-encrypted on Windows, scoped to your user). On each start it pulls the
+master password from the keyring, runs `bw unlock --raw`, and caches the
+session token in RAM only — idle-expires after 15 minutes, re-locks on
+shutdown. The master password never lands on disk outside the OS keyring, and
+never enters the model's context.
 
-Subsequent MCP starts call the keyring, `bw unlock --raw`, and cache the
-session token in RAM only. Idle-expires after 15 minutes; re-locks on
-shutdown. Master password never hits disk outside the OS keyring.
+One-time setup for a fresh machine, top to bottom:
+
+### 1. Install the Bitwarden CLI
+
+```powershell
+winget install --id Bitwarden.CLI --accept-source-agreements --accept-package-agreements
+```
+
+winget puts `bw.exe` on PATH via a shim — **open a new shell** afterward so the
+update takes effect. (No winget? `npm install -g @bitwarden/cli`, or grab a
+binary from <https://bitwarden.com/download/>.) Verify:
+
+```bash
+bw --version   # e.g. 2026.3.0
+bw status      # {"status":"unauthenticated", ...}
+```
+
+### 2. Log in
+
+Interactive — only your terminal sees the master password.
+
+```bash
+bw login
+```
+
+Prompts for email, master password, and a two-step token. On success
+`bw status` reports `"status":"locked"` — leave it locked; the MCP unlocks on
+demand.
+
+### 3. Stash the master password in the OS keyring
+
+Keep it out of `.env` and off the command line. After `uv sync`, stash it at
+the hidden prompt:
+
+```bash
+uv run python -c "import keyring, getpass; keyring.set_password('autopilot-mcp', 'bw_master', getpass.getpass('Master password: ')); print('stored')"
+```
+
+This writes to service `autopilot-mcp`, username `bw_master`. Confirm without
+printing the value:
+
+```bash
+uv run python -c "import keyring; v = keyring.get_password('autopilot-mcp', 'bw_master'); print(f'present={v is not None} length={len(v) if v else 0} backend={keyring.get_keyring().__class__.__name__}')"
+# present=True length=<your pw length> backend=WinVaultKeyring
+```
+
+### 4. Smoke-test the unlock loop
+
+Runs the real path — keyring read, `bw unlock`, list, lock — without printing
+the password:
+
+```bash
+uv run python -c "
+import json, os, subprocess, keyring
+pw = keyring.get_password('autopilot-mcp', 'bw_master')
+assert pw, 'keyring empty'
+subprocess.run(['bw', 'sync'], check=True)
+u = subprocess.run(['bw', 'unlock', '--raw', '--passwordenv', 'BW_PW'],
+                   env={**os.environ, 'BW_PW': pw}, capture_output=True, text=True, check=True)
+session = u.stdout.strip()
+items = json.loads(subprocess.run(['bw', 'list', 'items', '--search', 'example',
+                                   '--session', session],
+                                  capture_output=True, text=True, check=True).stdout)
+print(f'vault items matching \"example\": {len(items)}')
+subprocess.run(['bw', 'lock', '--session', session], check=True)
+"
+```
+
+If it completes without errors, setup is done.
+
+### Maintenance
+
+- **Rotate the master password** — re-stash; the entry is overwritten in place:
+  ```bash
+  uv run python -c "import keyring, getpass; keyring.set_password('autopilot-mcp', 'bw_master', getpass.getpass('New master password: '))"
+  ```
+- **Remove the keyring entry** (the MCP then fails at startup until restored):
+  ```bash
+  uv run python -c "import keyring; keyring.delete_password('autopilot-mcp', 'bw_master')"
+  ```
+- **`bw` fell off PATH** — open a new shell (winget's PATH update doesn't reach
+  already-open shells); if still missing, re-run the install from step 1.
+- **Force a full re-sync** — `bw sync --force`. The MCP runs `bw sync` after
+  every write, so this is only needed if the vault was edited elsewhere and you
+  want the in-RAM cache to refresh before idle expiry.
+- **Log out** — `bw logout` drops the account from local `bw` state; repeat
+  steps 2–3 to restore.
 
 ## Initial browser session setup
 
