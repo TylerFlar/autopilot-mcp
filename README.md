@@ -1,14 +1,12 @@
-# @tasque/autopilot-mcp
+# autopilot-mcp
 
-Free-roam browser automation MCP with learned playbooks and Bitwarden-backed
-credentials. The calling LLM drives a Camoufox browser via screenshot + click
-+ type + JS, fills logins without ever seeing the password, and caches
-successful step sequences as "playbooks" for 1-call replay.
-
-> **Why** — Hardcoded CSS selectors break every site update; per-site env-var
-> credentials break every new site. This MCP exposes generic browser tools
-> that work on any URL, and pulls credentials from your Bitwarden vault so
-> passwords never enter the LLM's context.
+A browser-automation [MCP](https://modelcontextprotocol.io) server. It hands an
+LLM a generic set of browser tools — navigate, screenshot, read text, run JS,
+click, type — that work on any URL, with each site backed by its own persistent
+[Camoufox](https://github.com/daijro/camoufox) browser profile. Logins are
+filled straight from a [Bitwarden](https://bitwarden.com) vault so passwords
+never enter the model's context, and any sequence of steps that works can be
+saved as a "playbook" for one-call replay next time.
 
 ## Tools
 
@@ -30,8 +28,8 @@ from the URL; everything else takes `profile` explicitly.
 | `attach_file` | Attach a local file to a `<input type="file">` (incl. hidden inputs). |
 | `scroll` | Scroll up or down. |
 
-For parallel workers that need the same site/profile, use isolated browser
-instances instead of the legacy shared-profile tools:
+For parallel work on the same site, use isolated browser **instances** — each
+clones the site's base profile so concurrent sessions don't collide:
 
 | Tool | Description |
 |------|-------------|
@@ -92,6 +90,8 @@ entries reaped on every request. Override the bind via
 | `run_playbook` | Execute a playbook. Returns screenshots/text from observation steps. |
 | `save_playbook` | Save a step sequence. **Call after a successful task.** |
 | `delete_playbook` | Remove a broken playbook. |
+| `playbook_run_list` | List run-ledger entries (one record per execution), newest first; filter by name/success. |
+| `playbook_run_get` | Fetch one run ledger's full JSON by `run_id`. |
 
 ## Workflow
 
@@ -129,17 +129,23 @@ persists across headless MCP invocations.
 
 ## Environment variables
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `HEADLESS` | No | `"false"` to show the browser for debugging (default: `true`) |
-| `BROWSER_TIMEOUT` | No | Page timeout in ms (default: `30000`) |
-| `TASQUE_LOG_JSON` | No | `"true"` for JSON log output; else human-readable console |
-| `TASQUE_LOG_LEVEL` | No | Log level for the `autopilot.credentials` audit logger (default: `INFO`) |
-| `AUTOPILOT_FILE_SERVER_HOST` | No | Bind interface for the local file server (default: `127.0.0.1`) |
-| `AUTOPILOT_FILE_SERVER_PORT` | No | Bind port for the local file server (default: `0` = ephemeral) |
+All optional — defaults are sane for local use.
 
-Per-site username/password env vars are **no longer used** — everything goes
-through Bitwarden.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HEADLESS` | `true` | Set `"false"` to show the browser window for debugging. |
+| `BROWSER_TIMEOUT` | `30000` | Per-page navigation/action timeout, in ms. |
+| `AUTOPILOT_TOOL_TIMEOUT_SECONDS` | `60` | Wall-clock cap on a single tool call. |
+| `AUTOPILOT_PLAYBOOK_TIMEOUT_SECONDS` | `300` | Wall-clock cap on a `run_playbook` call. |
+| `AUTOPILOT_BW_TIMEOUT_SECONDS` | `45` | Timeout for a single `bw` CLI invocation. |
+| `AUTOPILOT_FILE_SERVER_HOST` | `127.0.0.1` | Bind interface for the local file server. |
+| `AUTOPILOT_FILE_SERVER_PORT` | `0` | Bind port for the local file server (`0` = ephemeral). |
+| `TASQUE_LOG_JSON` | `false` | `"true"` for JSON logs; otherwise human-readable console output. |
+| `TASQUE_LOG_LEVEL` | `INFO` | Root log level for all `autopilot.*` loggers. |
+| `BITWARDENCLI_APPDATA_DIR` | — | Override the Bitwarden CLI data directory (standard `bw` variable). |
+
+Credentials are pulled from Bitwarden — there are no per-site username/password
+environment variables.
 
 ## Development
 
