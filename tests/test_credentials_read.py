@@ -19,7 +19,7 @@ def _bw_args(call: dict) -> list[str]:
 
 def test_startup_check_missing_bw(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("credentials.shutil.which", lambda _: None)
-    with pytest.raises(credentials.BitwardenError, match="Phase 0 setup"):
+    with pytest.raises(credentials.BitwardenError, match="not found on PATH"):
         credentials.startup_check()
 
 
