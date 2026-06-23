@@ -1,0 +1,43 @@
+# --- Personal / sensitive runtime data (NEVER commit) ---
+# Browser profiles (cookies, key4.db, sessions), failure dumps,
+# learned playbooks, playbook-run ledgers -- all user-specific.
+data/
+# Bitwarden CLI local app state.
+Bitwarden CLI/
+# Secrets / local config.
+.env
+.env.*
+*.pem
+*.key
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+
+# --- Virtualenvs ---
+.venv/
+venv/
+env/
+
+# --- Tooling caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- Lockfile (managed locally) ---
+uv.lock
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
