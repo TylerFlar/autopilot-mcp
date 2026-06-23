@@ -32,9 +32,6 @@ env/
 .coverage
 htmlcov/
 
-# --- Lockfile (managed locally) ---
-uv.lock
-
 # --- Editors / OS ---
 .vscode/
 .idea/
