@@ -58,14 +58,14 @@ uv sync
 Then stash the password (you type it at the hidden prompt):
 
 ```bash
-uv run python -c "import keyring, getpass; keyring.set_password('tasque-autopilot', 'bw_master', getpass.getpass('Master password: ')); print('stored')"
+uv run python -c "import keyring, getpass; keyring.set_password('autopilot-mcp', 'bw_master', getpass.getpass('Master password: ')); print('stored')"
 ```
 
-`keyring` writes to service `tasque-autopilot`, username `bw_master`. To
+`keyring` writes to service `autopilot-mcp`, username `bw_master`. To
 confirm without printing the value:
 
 ```bash
-uv run python -c "import keyring; v = keyring.get_password('tasque-autopilot', 'bw_master'); print(f'present={v is not None} length={len(v) if v else 0} backend={keyring.get_keyring().__class__.__name__}')"
+uv run python -c "import keyring; v = keyring.get_password('autopilot-mcp', 'bw_master'); print(f'present={v is not None} length={len(v) if v else 0} backend={keyring.get_keyring().__class__.__name__}')"
 ```
 
 Expected: `present=True length=<your pw length> backend=WinVaultKeyring`.
@@ -83,7 +83,7 @@ To smoke-test the loop manually:
 cd mcps/autopilot-mcp
 uv run python -c "
 import json, os, subprocess, keyring
-pw = keyring.get_password('tasque-autopilot', 'bw_master')
+pw = keyring.get_password('autopilot-mcp', 'bw_master')
 assert pw, 'keyring empty'
 subprocess.run(['bw', 'sync'], check=True)
 u = subprocess.run(['bw', 'unlock', '--raw', '--passwordenv', 'BW_PW'],
@@ -108,7 +108,7 @@ Phase 0 is done.
 If you change your Bitwarden master password, re-stash it:
 
 ```bash
-uv run python -c "import keyring, getpass; keyring.set_password('tasque-autopilot', 'bw_master', getpass.getpass('New master password: '))"
+uv run python -c "import keyring, getpass; keyring.set_password('autopilot-mcp', 'bw_master', getpass.getpass('New master password: '))"
 ```
 
 The old entry is overwritten in-place.
@@ -116,7 +116,7 @@ The old entry is overwritten in-place.
 ### Remove the keyring entry
 
 ```bash
-uv run python -c "import keyring; keyring.delete_password('tasque-autopilot', 'bw_master')"
+uv run python -c "import keyring; keyring.delete_password('autopilot-mcp', 'bw_master')"
 ```
 
 After this the MCP will fail at startup until the entry is restored.

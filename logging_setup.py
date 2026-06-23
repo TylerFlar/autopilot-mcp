@@ -1,8 +1,8 @@
 """Structlog configuration for the autopilot MCP.
 
-Mirrors tasque's src/tasque/logging_config.py so the audit trail can be
-piped through the same log tooling. All output goes to stderr because the
-MCP's stdio transport owns stdout.
+All output goes to stderr because the MCP's stdio transport owns stdout.
+Output format and level are controlled by the AUTOPILOT_LOG_JSON and
+AUTOPILOT_LOG_LEVEL environment variables.
 
 Call configure() once at server startup.
 """
@@ -28,12 +28,12 @@ def configure(
 ) -> None:
     """Set up structlog routing to stderr. Idempotent."""
     if json_format is None:
-        json_format = _env_bool("TASQUE_LOG_JSON")
+        json_format = _env_bool("AUTOPILOT_LOG_JSON")
 
     resolved_level: int
     if level is None:
         resolved_level = getattr(
-            logging, os.environ.get("TASQUE_LOG_LEVEL", "INFO").upper(), logging.INFO
+            logging, os.environ.get("AUTOPILOT_LOG_LEVEL", "INFO").upper(), logging.INFO
         )
     elif isinstance(level, str):
         resolved_level = getattr(logging, level.upper(), logging.INFO)

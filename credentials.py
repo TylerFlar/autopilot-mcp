@@ -39,7 +39,7 @@ import pyotp
 import structlog
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-KEYRING_SERVICE = "tasque-autopilot"
+KEYRING_SERVICE = "autopilot-mcp"
 KEYRING_USERNAME = "bw_master"
 BW_BINARY = "bw"
 BW_TIMEOUT_SECONDS = float(os.environ.get("AUTOPILOT_BW_TIMEOUT_SECONDS", "45"))
