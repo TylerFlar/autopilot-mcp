@@ -1,6 +1,6 @@
 """Regression tests for the per-tool asyncio.wait_for cap + navigation timeout.
 
-Context: autopilot-MCP-driven tasque workers were wedging ``claude --print``
+Context: MCP-driven agent workers were wedging ``claude --print``
 for ~15min per hang (every hang capture on 2026-04-17 showed claude
 ESTABLISHED to the MCP on :3100 with no response). The MCP tools had no
 outer wall-clock cap, so any Playwright stall (captcha iframe, redirect

@@ -140,8 +140,8 @@ All optional — defaults are sane for local use.
 | `AUTOPILOT_BW_TIMEOUT_SECONDS` | `45` | Timeout for a single `bw` CLI invocation. |
 | `AUTOPILOT_FILE_SERVER_HOST` | `127.0.0.1` | Bind interface for the local file server. |
 | `AUTOPILOT_FILE_SERVER_PORT` | `0` | Bind port for the local file server (`0` = ephemeral). |
-| `TASQUE_LOG_JSON` | `false` | `"true"` for JSON logs; otherwise human-readable console output. |
-| `TASQUE_LOG_LEVEL` | `INFO` | Root log level for all `autopilot.*` loggers. |
+| `AUTOPILOT_LOG_JSON` | `false` | `"true"` for JSON logs; otherwise human-readable console output. |
+| `AUTOPILOT_LOG_LEVEL` | `INFO` | Root log level for all `autopilot.*` loggers. |
 | `BITWARDENCLI_APPDATA_DIR` | — | Override the Bitwarden CLI data directory (standard `bw` variable). |
 
 Credentials are pulled from Bitwarden — there are no per-site username/password

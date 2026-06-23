@@ -32,11 +32,11 @@ from playbooks import PlaybookManager
 # humanize-mode stall gets bounded here rather than propagating up to
 # claude (which has no way to recover a stuck MCP tool call on its own).
 #
-# 2026-04-17 baseline: ~15-min hangs on autopilot-MCP-driven workers,
-# every hang capture showing an ESTABLISHED TCP to :3100 with claude
-# blocked waiting on an MCP response. The host proxy and tasque job
-# runner have their own safety nets (nudge ladder, asyncio.wait_for on
-# call_llm); this cap is the fix at the root.
+# 2026-04-17 baseline: ~15-min hangs on MCP-driven workers, every hang
+# capture showing an ESTABLISHED TCP to :3100 with claude blocked
+# waiting on an MCP response. The host process and its job runner have
+# their own safety nets (nudge ladder, asyncio.wait_for on call_llm);
+# this cap is the fix at the root.
 TOOL_TIMEOUT_SECONDS: float = float(
     os.environ.get("AUTOPILOT_TOOL_TIMEOUT_SECONDS", "60")
 )

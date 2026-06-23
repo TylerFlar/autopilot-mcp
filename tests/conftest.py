@@ -71,8 +71,10 @@ def mock_subprocess(monkeypatch: pytest.MonkeyPatch) -> types.SimpleNamespace:
 def mock_keyring(monkeypatch: pytest.MonkeyPatch) -> dict[tuple[str, str], str]:
     """Replace keyring.get_password with a dict-backed stub. Pre-seeded with
     the master password the real MCP would look up."""
+    import credentials
+
     store: dict[tuple[str, str], str] = {
-        ("tasque-autopilot", "bw_master"): "test-master-password",
+        (credentials.KEYRING_SERVICE, credentials.KEYRING_USERNAME): "test-master-password",
     }
     monkeypatch.setattr(
         "credentials.keyring.get_password",
