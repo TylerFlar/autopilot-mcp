@@ -1,8 +1,8 @@
 """Regression tests for the per-tool asyncio.wait_for cap + navigation timeout.
 
-Context: MCP-driven agent workers were wedging ``the MCP client``
-for ~15min per hang (every hang capture on 2026-04-17 showed MCP client
-ESTABLISHED to the MCP on  with no response). The MCP tools had no
+Context: MCP-driven agents were wedging their client
+for ~15min per hang (every hang capture on 2026-04-17 showed the client
+ESTABLISHED to the MCP with no response). The MCP tools had no
 outer wall-clock cap, so any Playwright stall (captcha iframe, redirect
 loop, Chromium deadlock under Camoufox humanize) propagated up
 unrecoverably. Two layers of fix:
@@ -13,7 +13,7 @@ unrecoverably. Two layers of fix:
      30s default (which can miss under Camoufox + SPA redirect loops).
 
   2. Every browser-touching MCP tool is wrapped in ``_with_tool_timeout``
-     which raises ``TimeoutError`` with an actionable message so MCP client
+     which raises ``TimeoutError`` with an actionable message so the caller
      can recover rather than wait for the host proxy's idle watchdog.
 
 These tests lock in both behaviors.
@@ -31,7 +31,7 @@ import server
 
 async def test_with_tool_timeout_raises_on_hang() -> None:
     """A wrapped tool that sleeps past its cap raises TimeoutError with
-    guidance the caller (MCP client) can act on."""
+    guidance the caller can act on."""
 
     @server._with_tool_timeout(timeout=0.05)
     async def _hang() -> str:
@@ -121,7 +121,7 @@ def test_decorated_tools_preserve_introspection() -> None:
     """FastMCP reads tool parameters via inspect.signature. The timeout
     decorator uses functools.wraps so introspection still finds the real
     signature — without this, every wrapped tool's schema would collapse
-    to ``(*args, **kwargs)`` and MCP client would lose all parameter hints.
+    to ``(*args, **kwargs)`` and the caller would lose all parameter hints.
     """
     import inspect
 

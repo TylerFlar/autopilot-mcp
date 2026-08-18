@@ -30,10 +30,10 @@ from playbooks import PlaybookManager
 # no single Playwright call can hang indefinitely — a Chromium deadlock,
 # captcha iframe that never resolves, auth redirect loop, or Camoufox
 # humanize-mode stall gets bounded here rather than propagating up to
-# MCP client (which has no way to recover a stuck MCP tool call on its own).
+# the MCP client (which has no way to recover a stuck tool call on its own).
 #
-# 2026-04-17 baseline: ~15-min hangs on MCP-driven workers, every hang
-# capture showing an ESTABLISHED TCP to  with MCP client blocked
+# 2026-04-17 baseline: ~15-min hangs on MCP-driven agents, every hang
+# capture showing an ESTABLISHED TCP connection with the client blocked
 # waiting on an MCP response. The host process and its job runner have
 # their own safety nets (nudge ladder, asyncio.wait_for on call_llm);
 # this cap is the fix at the root.
@@ -57,7 +57,7 @@ def _with_tool_timeout(
 
     On timeout, raises ``TimeoutError`` with a message pointing the caller
     at the likely failure modes (captcha, redirect loop, Playwright hang)
-    so MCP client can adapt rather than retry the same stuck call. Preserves
+    so the caller can adapt rather than retry the same stuck call. Preserves
     the wrapped function's signature so FastMCP's schema introspection
     still sees the original parameters.
     """
@@ -107,7 +107,7 @@ Profile model:
   same eTLD+1 to act on the page you just opened.
 
 Instance model:
-  Persistent profiles are shared browser contexts. Multiple workers touching
+  Persistent profiles are shared browser contexts. Multiple callers touching
   the same profile at the same time should use spawn_instance(url), which
   clones the base profile into a temporary isolated profile and returns an
   opaque instance_id. All follow-up calls must use instance_* tools with that
@@ -132,8 +132,9 @@ Signing up and want to remember the creds? Use upsert_login(url, user, pw).
 Keyboard: press_key(profile, "Enter") sends a real key event. Don't hand-roll
 `new KeyboardEvent(...)` in run_js — those are untrusted and widely ignored.
 
-SMS 2FA? navigate("https://messages.example.com/web/") and read the code —
-the Messages profile is auth-persisted via its own browser profile.
+SMS 2FA? Open your carrier's or phone vendor's messages-on-web client and
+read the code — it gets its own auth-persisted browser profile like any
+other site.
 
 Uploading a file the site asks for? Two paths:
   attach_file(profile, selector, path)   standard <input type="file">
@@ -332,9 +333,9 @@ async def spawn_instance(
 ) -> str:
     """Create an isolated temporary browser instance for parallel work.
 
-    Use this when multiple workers might touch the same site/profile at the
+    Use this when multiple callers might touch the same site/profile at the
     same time. The instance is seeded by cloning the base profile directory,
-    so a logged-in ``google.com`` profile can be used by several workers
+    so a logged-in ``example.com`` profile can be used by several callers
     without them sharing one live page. Follow-up calls must use the returned
     ``instance_id`` with ``instance_*`` tools. Call ``close_instance`` when done.
 
@@ -844,9 +845,9 @@ async def fill_login(
         vault_item: Optional vault item name/id; overrides URL matching.
         password_mode: 'value' (default) fills via DOM. 'keystroke' focuses
              the password field, clears it, and types via real key events —
-             needed for frameworks (e.g. Broker) that ignore .value fills.
+             needed for frameworks that ignore .value fills.
         account: Username/email to pick between entries sharing this URL
-             (e.g. which Google account). Ambiguity errors list the choices.
+             (e.g. which of two accounts on one site). Errors list the choices.
     """
     profile = resolve_profile(url)
     page = await browser_mgr.get_page(profile)

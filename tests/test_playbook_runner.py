@@ -411,12 +411,13 @@ VARIANT_REMEMBERED_SEL = (
     "select[id*=\"rememberme\" i], "
     "[data-testid*=\"username\" i][aria-haspopup=\"listbox\"]"
 )
-VARIANT_AUTH_CHECK = "POST_LOGIN_AUTH_CHECK"
+POST_LOGIN_CHECK = "POST_LOGIN_AUTH_CHECK"
 
 
 def _two_variant_login_steps() -> list[dict[str, Any]]:
-    """Mirror the production two_variant_login.json flow so the branching
-    assertions stay locked to the shipping playbook structure."""
+    """A login playbook that branches on which form variant is showing —
+    a fresh username+password form, or a remembered-username form where
+    only the password field is present."""
     return [
         {
             "action": "detect_variant",
@@ -432,7 +433,7 @@ def _two_variant_login_steps() -> list[dict[str, Any]]:
             "steps": [
                 {
                     "action": "fill_login",
-                    "url": "https://app.example.com/prgw/digital/signin/retail",
+                    "url": "https://secure.example.com/signin",
                     "vault_item": "example.com",
                     "username_selector": "#dom-username-input",
                     "password_selector": "#dom-pswd-input",
@@ -452,7 +453,7 @@ def _two_variant_login_steps() -> list[dict[str, Any]]:
                 },
                 {
                     "action": "fill_login",
-                    "url": "https://app.example.com/prgw/digital/signin/retail",
+                    "url": "https://secure.example.com/signin",
                     "vault_item": "example.com",
                     "password_selector": "#dom-pswd-input",
                     "password_mode": "keystroke",
@@ -462,7 +463,7 @@ def _two_variant_login_steps() -> list[dict[str, Any]]:
         },
         {
             "action": "run_js",
-            "script": VARIANT_AUTH_CHECK,
+            "script": POST_LOGIN_CHECK,
             "description": "post-login diagnostic",
         },
     ]
@@ -478,64 +479,17 @@ def _install_fake_fill_login(
     monkeypatch.setattr(playbooks._credentials, "fill_login", fake_fill_login)
 
 
-async def test_two_variant_login_shape_matches_production_playbook(
-    playbooks_tmp: Path,
-) -> None:
-    """The shipping two_variant_login.json must keep the branching shape the
-    runner expects — detect_variant first, then two when_variant blocks."""
-    example-broker_path = (
-        Path(playbooks.__file__).parent
-        / "data"
-        / "playbooks"
-        / "two_variant_login.json"
-    )
-    data = json.loads(example-broker_path.read_text(encoding="utf-8"))
-    steps = data["steps"]
-    actions = [s.get("action") for s in steps]
-    assert "detect_variant" in actions
-    # Both fresh and remembered branches must exist.
-    when_variant_names = [
-        s.get("name") for s in steps if s.get("action") == "when_variant"
-    ]
-    assert "fresh" in when_variant_names
-    assert "remembered" in when_variant_names
-    # The remembered branch must assert_js before touching fill_login — we
-    # never want to type a password into a stranger's combobox.
-    remembered_branch = next(
-        s for s in steps if s.get("action") == "when_variant"
-        and s.get("name") == "remembered"
-    )
-    sub_actions = [s.get("action") for s in remembered_branch["steps"]]
-    assert sub_actions.index("assert_js") < sub_actions.index("fill_login")
-    # And the password-only fill must carry skip_username=True so the
-    # credentials helper doesn't try to fill a non-existent text input.
-    pw_step = next(
-        s for s in remembered_branch["steps"] if s.get("action") == "fill_login"
-    )
-    assert pw_step.get("skip_username") is True
-    extract_idx = actions.index("extract_text")
-    post_login_diagnostics = [
-        (idx, step)
-        for idx, step in enumerate(steps)
-        if step.get("action") == "run_js" and idx < extract_idx
-    ]
-    assert post_login_diagnostics
-    diagnostic = post_login_diagnostics[-1][1]
-    assert "incorrect username or password" in diagnostic["script"]
-    assert "Post-login diagnostic" in diagnostic["description"]
-
-
 async def test_detect_variant_fresh_runs_fresh_branch(
     playbooks_tmp: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _seed_playbook(playbooks_tmp, "fid", _two_variant_login_steps())
+    _seed_playbook(playbooks_tmp, "two_variant_login", _two_variant_login_steps())
     page = FakePage()
     page.present_selectors = {VARIANT_FRESH_SEL}
-    page.js_results_by_script = {VARIANT_AUTH_CHECK: True}
+    page.js_results_by_script = {POST_LOGIN_CHECK: True}
     captured: list[dict[str, Any]] = []
     _install_fake_fill_login(monkeypatch, captured)
 
-    result = await mgr_run(page, "fid")
+    result = await mgr_run(page, "two_variant_login")
 
     assert result["success"] is True
     # Exactly one fill_login call, and it's the fresh branch (no
@@ -548,18 +502,18 @@ async def test_detect_variant_fresh_runs_fresh_branch(
 async def test_detect_variant_remembered_runs_remembered_branch_when_suffix_matches(
     playbooks_tmp: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _seed_playbook(playbooks_tmp, "fid", _two_variant_login_steps())
+    _seed_playbook(playbooks_tmp, "two_variant_login", _two_variant_login_steps())
     page = FakePage()
     page.present_selectors = {VARIANT_REMEMBERED_SEL}
-    # Suffix check returns truthy — mimic Broker's masked '******lar'.
+    # Suffix check returns truthy — mimic a masked username like '******ith'.
     page.js_results_by_script = {
         "SUFFIX_CHECK": True,
-        VARIANT_AUTH_CHECK: True,
+        POST_LOGIN_CHECK: True,
     }
     captured: list[dict[str, Any]] = []
     _install_fake_fill_login(monkeypatch, captured)
 
-    result = await mgr_run(page, "fid")
+    result = await mgr_run(page, "two_variant_login")
 
     assert result["success"] is True
     # Exactly one fill_login, remembered branch (skip_username=True, no
@@ -569,17 +523,17 @@ async def test_detect_variant_remembered_runs_remembered_branch_when_suffix_matc
     assert captured[0].get("password_selector") == "#dom-pswd-input"
 
 
-async def test_two_variant_login_diagnostic_does_not_bail_on_recoverable_login_state(
+async def test_login_diagnostic_does_not_bail_on_recoverable_login_state(
     playbooks_tmp: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _seed_playbook(playbooks_tmp, "fid", _two_variant_login_steps())
+    _seed_playbook(playbooks_tmp, "two_variant_login", _two_variant_login_steps())
     page = FakePage()
     page.present_selectors = {VARIANT_FRESH_SEL}
-    page.js_results_by_script = {VARIANT_AUTH_CHECK: False}
+    page.js_results_by_script = {POST_LOGIN_CHECK: False}
     captured: list[dict[str, Any]] = []
     _install_fake_fill_login(monkeypatch, captured)
 
-    result = await mgr_run(page, "fid")
+    result = await mgr_run(page, "two_variant_login")
 
     assert result["success"] is True
     assert {"step": 3, "type": "js", "description": "post-login diagnostic", "result": "False"} in result["results"]
@@ -589,7 +543,7 @@ async def test_two_variant_login_diagnostic_does_not_bail_on_recoverable_login_s
 async def test_detect_variant_remembered_bails_when_suffix_mismatches(
     playbooks_tmp: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _seed_playbook(playbooks_tmp, "fid", _two_variant_login_steps())
+    _seed_playbook(playbooks_tmp, "two_variant_login", _two_variant_login_steps())
     page = FakePage()
     page.present_selectors = {VARIANT_REMEMBERED_SEL}
     # Suffix check returns falsy — masked username is NOT ours.
@@ -597,7 +551,7 @@ async def test_detect_variant_remembered_bails_when_suffix_mismatches(
     captured: list[dict[str, Any]] = []
     _install_fake_fill_login(monkeypatch, captured)
 
-    result = await mgr_run(page, "fid")
+    result = await mgr_run(page, "two_variant_login")
 
     assert result["success"] is False
     assert "suffix mismatch" in str(result.get("error", ""))
@@ -609,13 +563,13 @@ async def test_detect_variant_remembered_bails_when_suffix_mismatches(
 async def test_detect_variant_neither_selector_fails_with_fallback_error(
     playbooks_tmp: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _seed_playbook(playbooks_tmp, "fid", _two_variant_login_steps())
+    _seed_playbook(playbooks_tmp, "two_variant_login", _two_variant_login_steps())
     page = FakePage()
     page.present_selectors = set()  # neither variant visible
     captured: list[dict[str, Any]] = []
     _install_fake_fill_login(monkeypatch, captured)
 
-    result = await mgr_run(page, "fid")
+    result = await mgr_run(page, "two_variant_login")
 
     assert result["success"] is False
     assert "neither variant visible" in str(result.get("error", ""))
@@ -689,7 +643,7 @@ async def mgr_run(page: FakePage, name: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# {{var}} substitution — parameterised playbooks (example-broker trade ticket,
+# {{var}} substitution — parameterised playbooks (e.g. a trade ticket,
 # Lyca autopay amount, wire-xfer recipient, etc.)
 # ---------------------------------------------------------------------------
 

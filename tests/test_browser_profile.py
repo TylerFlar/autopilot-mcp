@@ -14,9 +14,9 @@ from browser import resolve_profile
         ("https://example.com", "example.com"),
         ("http://example.com/path?q=1", "example.com"),
         # Subdomains collapse to eTLD+1
-        ("https://app.example.com/ftgw/digital/portfolio/summary", "example.com"),
+        ("https://app.example.com/deep/nested/path", "example.com"),
         ("https://www.example.net/accounts/login/", "example.net"),
-        ("https://messages.example.com/web/", "google.com"),
+        ("https://a.b.example.org/web/", "example.org"),
         ("https://a.b.c.example.co.uk/x", "example.co.uk"),
         # Private suffix (github.io is on the PSL)
         ("https://user.github.io/project/", "user.github.io"),

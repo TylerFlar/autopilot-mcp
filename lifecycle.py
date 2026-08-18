@@ -1,7 +1,7 @@
 """Keep autopilot browsers from outliving their session (Windows).
 
-Observed leak, 2026-08-14: six MCP client sessions spanning four days each held an
-autopilot server whose Camoufox trees stayed open forever — nothing ever closed
+Observed leak, 2026-08-14: six MCP client sessions spanning four days each held
+an autopilot server whose Camoufox trees stayed open forever — nothing ever closed
 an idle context, and a server that dies uncleanly leaves the playwright driver
 and every camoufox.exe running (they are not in the parent's kill tree). Three
 mechanisms, all cheap:

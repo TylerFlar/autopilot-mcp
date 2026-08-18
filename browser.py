@@ -42,7 +42,7 @@ def resolve_profile(url: str) -> str:
     """Derive the per-domain profile key for a URL.
 
     Registrable domain (eTLD+1) when tldextract can compute one — e.g.
-    `https://app.example.com/portfolio` → `example.com`. Falls back
+    `https://app.example.com/dashboard` → `example.com`. Falls back
     to the hostname for anything without a public suffix (IPs, localhost,
     custom internal hosts).
     """
@@ -135,8 +135,8 @@ class BrowserManager:
         # the tool-timeout wrapper raises ``TimeoutError`` while the
         # underlying Playwright task keeps the shared browser context
         # pinned, making every subsequent tool call on the same profile
-        # hang too. Tracking 2026-04-17 wedges against a bank / a lender portal /
-        # Broker playbook-build jobs — all headless. Only humanize when
+        # hang too. Tracking 2026-04-17 wedges across several bank and
+        # portal playbook-build jobs — all headless. Only humanize when
         # there's an actual viewport the operator can see.
         cm = AsyncCamoufox(
             persistent_context=True,

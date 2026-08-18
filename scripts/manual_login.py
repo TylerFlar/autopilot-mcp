@@ -44,7 +44,7 @@ async def manual_login(url: str) -> None:
 def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: uv run python scripts/manual_login.py <url>")
-        print("Example: uv run python scripts/manual_login.py https://www.example.net/login")
+        print("Example: uv run python scripts/manual_login.py https://example.com/login")
         sys.exit(1)
 
     url = sys.argv[1]

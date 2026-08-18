@@ -44,8 +44,8 @@ clones the site's base profile so concurrent sessions don't collide:
 | `instance_run_js` / `instance_click` / `instance_type_text` / `instance_press_key` / `instance_scroll` | Page interaction scoped to one `instance_id`. |
 | `instance_attach_file` / `instance_fill_login` | Upload/login helpers scoped to one `instance_id`. |
 
-Example: `spawn_instance(url="https://accounts.example.com/...", clone_from_profile="google.com")`
-lets each webmail cleanup branch use its own cloned Google session. Always call
+Example: `spawn_instance(url="https://accounts.example.com/...", clone_from_profile="example.com")`
+lets each parallel branch work in its own cloned session. Always call
 `close_instance(instance_id)` when the branch is finished; timed-out instances
 are also cleaned up automatically.
 
@@ -104,7 +104,7 @@ entries reaped on every request. Override the bind via
 2. `run_playbook(name)` — if yes, run it. Done.
 3. Otherwise: `navigate(url)` → `screenshot` / `get_text` → `run_js` / `click` / `type_text`.
 4. On a login page: `fill_login(url)` — Bitwarden injects creds directly. If the form needs 2FA: `get_totp(vault_item)` then `type_text(profile, code)`.
-5. For SMS 2FA: `navigate("https://messages.example.com/web/")` and read the code from a messages-on-web client.
+5. For SMS 2FA: open your messages-on-web client in its own profile and read the code from there.
 6. After the task succeeds, `save_playbook(...)` so next time is one call.
 7. Just signed up somewhere new? `upsert_login(url, username, password)` stores it and Bitwarden sync pushes to your other devices.
 
@@ -120,8 +120,8 @@ The MCP drives a **`bw serve` daemon** — one `bw` process, unlocked once, that
 answers over loopback HTTP. It starts on the first credential call and is
 locked and killed after 15 idle minutes (and on shutdown).
 
-**One daemon per box, not per MCP process.** Every worker run spawns its own
-autopilot MCP, so they rendezvous through `data/bw-serve.json` (port + a shared
+**One daemon per box, not per MCP process.** A client that starts one autopilot
+MCP per job ends up with several at once, so they rendezvous through `data/bw-serve.json` (port + a shared
 last-touch stamp, guarded by a lock file): the first process in spawns and owns
 the daemon, later ones adopt its port. Only the owner locks or kills it, and
 only once *every* process has been idle past the window — otherwise a sibling

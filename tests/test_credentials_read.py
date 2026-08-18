@@ -157,11 +157,11 @@ def test_list_items_falls_back_to_local_vault_when_cli_session_is_locked(
 ) -> None:
     class FakeLocalVault:
         def list_items(self, query):
-            assert query == "example-broker"
+            assert query == "example"
             return [{"id": "LOCAL", "name": "example.com", "login": {"username": "u"}}]
 
     prime_unlock()
-    mock_subprocess.responses[("list", "items", "--search", "example-broker")] = {
+    mock_subprocess.responses[("list", "items", "--search", "example")] = {
         "rc": 1,
         "stderr": "Vault is locked.",
     }
@@ -170,7 +170,7 @@ def test_list_items_falls_back_to_local_vault_when_cli_session_is_locked(
         lambda: FakeLocalVault(),
     )
 
-    items = bw_client.list_items("example-broker")
+    items = bw_client.list_items("example")
 
     assert items == [{"id": "LOCAL", "name": "example.com", "login": {"username": "u"}}]
 
@@ -257,12 +257,12 @@ def test_get_totp_without_a_seed_says_what_to_do_instead(
     mock_subprocess, bw_client, prime_unlock
 ) -> None:
     prime_unlock()
-    mock_subprocess.responses[("get", "item", "google.com")] = {
-        "stdout": json.dumps({"id": "ITEM42", "name": "google.com", "login": {}}),
+    mock_subprocess.responses[("get", "item", "shared.example")] = {
+        "stdout": json.dumps({"id": "ITEM42", "name": "shared.example", "login": {}}),
     }
 
     with pytest.raises(credentials.BitwardenError) as excinfo:
-        bw_client.get_totp("google.com")
+        bw_client.get_totp("shared.example")
 
     message = str(excinfo.value)
     assert "has no TOTP secret stored" in message
@@ -273,31 +273,31 @@ def test_get_item_disambiguates_by_username(
     mock_subprocess, bw_client, prime_unlock
 ) -> None:
     prime_unlock()
-    mock_subprocess.responses[("list", "items", "--url", "https://google.com")] = {
+    mock_subprocess.responses[("list", "items", "--url", "https://shared.example")] = {
         "stdout": json.dumps([
-            {"id": "A", "name": "google.com", "login": {"username": "one@example.com"}},
-            {"id": "B", "name": "google.com", "login": {"username": "two@example.com"}},
+            {"id": "A", "name": "shared.example", "login": {"username": "one@example.com"}},
+            {"id": "B", "name": "shared.example", "login": {"username": "two@example.com"}},
         ])
     }
 
-    assert bw_client.get_item("https://google.com", "two@example.com")["id"] == "B"
+    assert bw_client.get_item("https://shared.example", "two@example.com")["id"] == "B"
 
 
 def test_ambiguous_match_error_names_the_candidates(
     mock_subprocess, bw_client, prime_unlock
 ) -> None:
-    """Both Google entries are literally named "google.com", so an error that
-    only lists names tells the caller nothing actionable."""
+    """Two accounts on one site are commonly stored under the same name, so an
+    error that only lists names tells the caller nothing actionable."""
     prime_unlock()
-    mock_subprocess.responses[("list", "items", "--url", "https://google.com")] = {
+    mock_subprocess.responses[("list", "items", "--url", "https://shared.example")] = {
         "stdout": json.dumps([
-            {"id": "A", "name": "google.com", "login": {"username": "one@example.com"}},
-            {"id": "B", "name": "google.com", "login": {"username": "two@example.com"}},
+            {"id": "A", "name": "shared.example", "login": {"username": "one@example.com"}},
+            {"id": "B", "name": "shared.example", "login": {"username": "two@example.com"}},
         ])
     }
 
     with pytest.raises(credentials.BitwardenError) as excinfo:
-        bw_client.get_item("https://google.com")
+        bw_client.get_item("https://shared.example")
 
     message = str(excinfo.value)
     assert "one@example.com" in message and "two@example.com" in message

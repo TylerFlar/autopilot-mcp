@@ -76,10 +76,10 @@ BW_TIMEOUT_SECONDS = float(os.environ.get("AUTOPILOT_BW_TIMEOUT_SECONDS", "45"))
 SYNC_TTL_SECONDS = float(os.environ.get("AUTOPILOT_BW_SYNC_TTL_MINUTES", "30")) * 60
 # Seconds to wait for `bw serve` to answer /status after spawn.
 SERVE_STARTUP_SECONDS = float(os.environ.get("AUTOPILOT_BW_SERVE_STARTUP_SECONDS", "45"))
-# Where sibling MCP processes rendezvous on a single shared daemon. Every
-# worker run spawns its own autopilot MCP, so without this each one would
-# stand up its own unlocked `bw serve` and they would all write data.json
-# concurrently.
+# Where sibling MCP processes rendezvous on a single shared daemon. A client
+# that starts one autopilot MCP per job has several running at once; without
+# this each would stand up its own unlocked `bw serve` and they would all
+# write data.json concurrently.
 SERVE_STATE_DIR = Path(
     os.environ.get("AUTOPILOT_BW_STATE_DIR") or (Path(__file__).parent / "data")
 )
@@ -796,9 +796,9 @@ def _free_port(host: str) -> int:
 
 # --- shared-daemon rendezvous ----------------------------------------------
 #
-# Every worker run spawns its own autopilot MCP process. Left alone, each one
-# would start a separate `bw serve`, so N unlocked vaults would sit listening
-# and N processes would write data.json at once. These three functions let
+# Several autopilot MCP processes can run at once. Left alone, each would
+# start a separate `bw serve`, so N unlocked vaults would sit listening and N
+# processes would write data.json at once. These three functions let
 # them agree on a single daemon: a tiny JSON state file with the port and a
 # shared last-touch stamp, guarded by an O_EXCL lock file (no new deps, and
 # Windows-safe, unlike fcntl).
@@ -1028,7 +1028,7 @@ class BitwardenClient:
         """Resolve a vault item by id, name, or URL.
 
         `username` disambiguates when several items share a URL — the common
-        case being one vault entry per Google account. Without it, an
+        case being one vault entry per account on a shared site. Without it, an
         ambiguous lookup raises rather than guessing, and the message lists
         every candidate's id/name/username so the caller can retry precisely.
         """
@@ -1391,22 +1391,23 @@ async def fill_login(
 
     account:
         Username/email to disambiguate when several vault entries share the
-        URL (three Google accounts, two banks, ...). Without it an ambiguous
+        URL (several accounts on one provider, two banks, ...). Without it an
+        ambiguous
         URL raises rather than picking one at random.
 
     password_mode:
         "value"     — set the field via page.fill (fast; DOM .value + events).
         "keystroke" — click + clear + page.keyboard.type. Required for sites
                       whose framework ignores .value-assigned passwords
-                      (e.g. Broker's login form).
+                      (e.g. some bank login forms).
 
     skip_username:
         When True, fill only the password field. Used by the remembered-
-        username variant of Broker's login (the username is pre-filled in
+        username variant of a login page (the username is pre-filled in
         a masked combobox; attempting to fill a text input would fail with
         no matching selector). Callers that set this must have already
         verified the pre-filled username is the expected one \u2014 see the
-        `assert_js` step in two_variant_login.json for the reference pattern.
+        `assert_js` step in a two-variant login playbook for the pattern.
     """
     if password_mode not in ("value", "keystroke"):
         raise ValueError(

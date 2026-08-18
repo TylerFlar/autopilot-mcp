@@ -115,7 +115,7 @@ async def test_fill_login_keystroke_mode_clears_and_types_password(
     result = await credentials.fill_login(
         bw_client,
         page,
-        "https://app.example.com/prgw/digital/login/full-page",
+        "https://secure.example.com/login/full-page",
         vault_item="Broker",
         password_mode="keystroke",
     )

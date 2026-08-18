@@ -218,7 +218,7 @@ def test_unreachable_daemon_is_restarted_once(serve_api: FakeServeApi) -> None:
     serve_api.requests.clear()
 
     # daemon dies; the next call must bring it back rather than surface
-    # a connection error to the worker mid-login
+    # a connection error to the caller mid-login
     serve_api.unlocked = False
     calls = {"n": 0}
     original = serve_api.handle
@@ -287,7 +287,7 @@ def test_a_sibling_process_keeps_the_daemon_alive(
 
 
 def test_second_process_adopts_the_running_daemon(serve_api: FakeServeApi) -> None:
-    """Every worker run spawns its own autopilot MCP. They must share one
+    """Several autopilot MCP processes can run at once. They must share one
     unlocked `bw serve`, not stand up N of them."""
     first = _client()
     first.list_items(None)
