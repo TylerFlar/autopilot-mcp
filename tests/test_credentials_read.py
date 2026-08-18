@@ -179,7 +179,7 @@ def test_get_item_falls_back_to_local_vault_when_cli_session_is_locked(
     mock_subprocess, bw_client, prime_unlock, monkeypatch
 ) -> None:
     class FakeLocalVault:
-        def get_item(self, id_or_url):
+        def get_item(self, id_or_url, username=None):
             assert id_or_url == "example.com"
             return {
                 "id": "LOCAL",
@@ -217,16 +217,92 @@ def test_get_item_ambiguous_url_match_raises(
         bw_client.get_item("https://shared.co")
 
 
-def test_get_totp_resolves_id_and_calls_bw(
+def test_get_totp_computes_locally_from_the_stored_seed(
+    mock_subprocess, bw_client, prime_unlock
+) -> None:
+    """Bitwarden gates `get totp` / /object/totp behind Premium, so the code
+    is derived from the seed we already hold rather than asked for."""
+    import pyotp
+
+    secret = pyotp.random_base32()
+    prime_unlock()
+    mock_subprocess.responses[("get", "item", "example-store")] = {
+        "stdout": json.dumps(
+            {"id": "ITEM42", "name": "example-store", "login": {"totp": secret}}
+        ),
+    }
+
+    code = bw_client.get_totp("example-store")
+
+    assert code == pyotp.TOTP(secret).now()
+    assert not [c for c in mock_subprocess.calls if _bw_args(c)[:2] == ("get", "totp")]
+
+
+def test_get_totp_accepts_an_otpauth_uri_seed(
+    mock_subprocess, bw_client, prime_unlock
+) -> None:
+    import pyotp
+
+    secret = pyotp.random_base32()
+    uri = f"otpauth://totp/site:user?secret={secret}&issuer=site"
+    prime_unlock()
+    mock_subprocess.responses[("get", "item", "example-store")] = {
+        "stdout": json.dumps({"id": "ITEM42", "name": "example-store", "login": {"totp": uri}}),
+    }
+
+    assert bw_client.get_totp("example-store") == pyotp.TOTP(secret).now()
+
+
+def test_get_totp_without_a_seed_says_what_to_do_instead(
     mock_subprocess, bw_client, prime_unlock
 ) -> None:
     prime_unlock()
-    mock_subprocess.responses[("get", "item", "example-store")] = {
-        "stdout": json.dumps({"id": "ITEM42", "name": "example-store", "login": {}}),
+    mock_subprocess.responses[("get", "item", "google.com")] = {
+        "stdout": json.dumps({"id": "ITEM42", "name": "google.com", "login": {}}),
     }
-    mock_subprocess.responses[("get", "totp", "ITEM42")] = {"stdout": "123456"}
 
-    assert bw_client.get_totp("example-store") == "123456"
+    with pytest.raises(credentials.BitwardenError) as excinfo:
+        bw_client.get_totp("google.com")
+
+    message = str(excinfo.value)
+    assert "has no TOTP secret stored" in message
+    assert "has_totp" in message
+
+
+def test_get_item_disambiguates_by_username(
+    mock_subprocess, bw_client, prime_unlock
+) -> None:
+    prime_unlock()
+    mock_subprocess.responses[("list", "items", "--url", "https://google.com")] = {
+        "stdout": json.dumps([
+            {"id": "A", "name": "google.com", "login": {"username": "one@example.com"}},
+            {"id": "B", "name": "google.com", "login": {"username": "two@example.com"}},
+        ])
+    }
+
+    assert bw_client.get_item("https://google.com", "two@example.com")["id"] == "B"
+
+
+def test_ambiguous_match_error_names_the_candidates(
+    mock_subprocess, bw_client, prime_unlock
+) -> None:
+    """Both Google entries are literally named "google.com", so an error that
+    only lists names tells the caller nothing actionable."""
+    prime_unlock()
+    mock_subprocess.responses[("list", "items", "--url", "https://google.com")] = {
+        "stdout": json.dumps([
+            {"id": "A", "name": "google.com", "login": {"username": "one@example.com"}},
+            {"id": "B", "name": "google.com", "login": {"username": "two@example.com"}},
+        ])
+    }
+
+    with pytest.raises(credentials.BitwardenError) as excinfo:
+        bw_client.get_item("https://google.com")
+
+    message = str(excinfo.value)
+    assert "one@example.com" in message and "two@example.com" in message
+    assert "id=A" in message and "id=B" in message
+    assert "username" in message
 
 
 def test_session_idle_expires_and_reunlocks(

@@ -25,8 +25,12 @@ from the URL; everything else takes `profile` explicitly.
 | `run_js` | **Preferred** for form fills / button clicks. Selector-based. |
 | `click` | Click at (x, y). Use when run_js can't target the element. |
 | `type_text` | Type into the focused element. |
+| `press_key` | Send a real key (`Enter`, `Tab`, `Control+A`, …). Beats synthetic `KeyboardEvent`s, which pages ignore as untrusted. |
 | `attach_file` | Attach a local file to a `<input type="file">` (incl. hidden inputs). |
 | `scroll` | Scroll up or down. |
+
+`run_js` takes either an expression or a statement body — scripts using
+`return` or top-level `await` are wrapped in an async IIFE automatically.
 
 For parallel work on the same site, use isolated browser **instances** — each
 clones the site's base profile so concurrent sessions don't collide:
@@ -37,7 +41,7 @@ clones the site's base profile so concurrent sessions don't collide:
 | `list_instances` | List live spawned instances and TTLs. |
 | `close_instance` | Close an instance and delete its temporary profile. |
 | `instance_navigate` / `instance_screenshot` / `instance_get_text` / `instance_get_url` | Browser navigation/inspection scoped to one `instance_id`. |
-| `instance_run_js` / `instance_click` / `instance_type_text` / `instance_scroll` | Page interaction scoped to one `instance_id`. |
+| `instance_run_js` / `instance_click` / `instance_type_text` / `instance_press_key` / `instance_scroll` | Page interaction scoped to one `instance_id`. |
 | `instance_attach_file` / `instance_fill_login` | Upload/login helpers scoped to one `instance_id`. |
 
 Example: `spawn_instance(url="https://accounts.example.com/...", clone_from_profile="google.com")`
@@ -49,9 +53,10 @@ are also cleaned up automatically.
 
 | Tool | Description |
 |------|-------------|
-| `list_logins` | Search the vault. Returns id/name/urls/username — **never passwords**. |
+| `list_logins` | Search the vault. Returns id/name/urls/username/has_totp — **never passwords**. |
 | `fill_login` | Inject creds from Bitwarden straight into form fields. Password never returns. |
-| `get_totp` | Current 6-digit TOTP from Bitwarden (single source of truth). |
+| `get_totp` | Current 6-digit TOTP, computed locally from the stored seed. |
+| `vault_status` | Transport, lock state, item count, snapshot age. `sync=True` forces a refresh. |
 | `create_login` | New vault entry. Refuses name collision. |
 | `update_login` | Patch fields on an existing entry. |
 | `upsert_login` | Create-or-update by (url, username). The signup convenience path. |
@@ -106,11 +111,59 @@ entries reaped on every request. Override the bind via
 ## Credentials setup (Bitwarden)
 
 The MCP unlocks Bitwarden with a master password stashed in the OS keyring
-(DPAPI-encrypted on Windows, scoped to your user). On each start it pulls the
-master password from the keyring, runs `bw unlock --raw`, and caches the
-session token in RAM only — idle-expires after 15 minutes, re-locks on
-shutdown. The master password never lands on disk outside the OS keyring, and
-never enters the model's context.
+(DPAPI-encrypted on Windows, scoped to your user). It never lands on disk
+outside the keyring, and never enters the model's context.
+
+### How the vault is reached
+
+The MCP drives a **`bw serve` daemon** — one `bw` process, unlocked once, that
+answers over loopback HTTP. It starts on the first credential call and is
+locked and killed after 15 idle minutes (and on shutdown).
+
+**One daemon per box, not per MCP process.** Every worker run spawns its own
+autopilot MCP, so they rendezvous through `data/bw-serve.json` (port + a shared
+last-touch stamp, guarded by a lock file): the first process in spawns and owns
+the daemon, later ones adopt its port. Only the owner locks or kills it, and
+only once *every* process has been idle past the window — otherwise a sibling
+mid-login would have the vault yanked out from under it. A state file pointing
+at a dead port is detected by probe and replaced.
+
+This replaced a per-operation `bw <cmd> --session …` design, which is broken on
+Bitwarden CLI ≥ 2026.3.0: `bw unlock --raw` returns a session that every
+*subsequent* process rejects with `Vault is locked.` Reads survived on a
+local-decryption fallback (`LocalBitwardenVault`); writes had no fallback and
+failed outright, and nothing ever synced. Reproduce the underlying bug with:
+
+```bash
+S=$(bw unlock --raw --passwordenv BW_PW); bw list items --session "$S"   # Vault is locked.
+```
+
+Set `AUTOPILOT_BW_TRANSPORT=cli` to force the old path (it still works for
+reads); `serve` to require the daemon and fail loudly if it can't start;
+`auto` (default) prefers the daemon and falls back to the CLI.
+
+Security posture: `bw serve` has no authentication, so the daemon binds
+`127.0.0.1` on a **random** port (never the well-known 8087), keeps Bitwarden's
+origin protection on, and does not outlive its idle window. Any local process
+running as you could still reach it while it is up — that is the same exposure
+as the keyring master password itself, but keep the idle window short.
+
+### Staying in sync
+
+`vault_status()` reports lock state, item count, and `sync_age_minutes`. The
+daemon syncs on start, before the first read once the local snapshot is older
+than `AUTOPILOT_BW_SYNC_TTL_MINUTES` (default 30), and after every write.
+Without that TTL the snapshot silently drifts: on the CLI path sync only ever
+ran after a write, and writes were failing, so the vault could go weeks stale
+and logins added in the Bitwarden app simply did not exist as far as the model
+could tell.
+
+### TOTP
+
+Codes are computed locally with `pyotp` from the seed stored on the vault item.
+Bitwarden's own `bw get totp` / `GET /object/totp` are Premium-gated and answer
+`Premium status is required to use this feature.` without it. Only items whose
+`list_logins` row shows `has_totp: true` can produce a code.
 
 One-time setup for a fresh machine, top to bottom:
 
@@ -160,27 +213,21 @@ uv run python -c "import keyring; v = keyring.get_password('autopilot-mcp', 'bw_
 
 ### 4. Smoke-test the unlock loop
 
-Runs the real path — keyring read, `bw unlock`, list, lock — without printing
-the password:
+Runs the real path — keyring read, daemon start, unlock, list, lock — without
+printing the password:
 
 ```bash
 uv run python -c "
-import json, os, subprocess, keyring
-pw = keyring.get_password('autopilot-mcp', 'bw_master')
-assert pw, 'keyring empty'
-subprocess.run(['bw', 'sync'], check=True)
-u = subprocess.run(['bw', 'unlock', '--raw', '--passwordenv', 'BW_PW'],
-                   env={**os.environ, 'BW_PW': pw}, capture_output=True, text=True, check=True)
-session = u.stdout.strip()
-items = json.loads(subprocess.run(['bw', 'list', 'items', '--search', 'example',
-                                   '--session', session],
-                                  capture_output=True, text=True, check=True).stdout)
-print(f'vault items matching \"example\": {len(items)}')
-subprocess.run(['bw', 'lock', '--session', session], check=True)
+import credentials
+c = credentials.BitwardenClient()
+print(c.vault_status())
+c.lock()
 "
 ```
 
-If it completes without errors, setup is done.
+A `transport: serve`, `status: unlocked`, and a non-zero `item_count` mean
+setup is done. A `transport: cli` line means the daemon could not start —
+`serve_unavailable` in the same output says why.
 
 ### Maintenance
 
@@ -194,9 +241,13 @@ If it completes without errors, setup is done.
   ```
 - **`bw` fell off PATH** — open a new shell (winget's PATH update doesn't reach
   already-open shells); if still missing, re-run the install from step 1.
-- **Force a full re-sync** — `bw sync --force`. The MCP runs `bw sync` after
-  every write, so this is only needed if the vault was edited elsewhere and you
-  want the in-RAM cache to refresh before idle expiry.
+- **Force a re-sync** — `vault_status(sync=True)` from the MCP, or `bw sync`
+  from a shell. Only needed if the vault was edited elsewhere and you don't
+  want to wait out `AUTOPILOT_BW_SYNC_TTL_MINUTES`.
+- **Duplicate entries for one site** — several logins can legitimately share a
+  URL (one per account). Lookups refuse to guess between them; pass
+  `account="<username>"` to `fill_login` / `get_totp`, or `vault_item=<id>`
+  from the ids the error lists.
 - **Log out** — `bw logout` drops the account from local `bw` state; repeat
   steps 2–3 to restore.
 
@@ -224,7 +275,11 @@ All optional — defaults are sane for local use.
 | `BROWSER_TIMEOUT` | `30000` | Per-page navigation/action timeout, in ms. |
 | `AUTOPILOT_TOOL_TIMEOUT_SECONDS` | `60` | Wall-clock cap on a single tool call. |
 | `AUTOPILOT_PLAYBOOK_TIMEOUT_SECONDS` | `300` | Wall-clock cap on a `run_playbook` call. |
-| `AUTOPILOT_BW_TIMEOUT_SECONDS` | `45` | Timeout for a single `bw` CLI invocation. |
+| `AUTOPILOT_BW_TIMEOUT_SECONDS` | `45` | Timeout for a single `bw` CLI invocation / serve request. |
+| `AUTOPILOT_BW_TRANSPORT` | `auto` | `auto` \| `serve` \| `cli` — how the vault is reached. |
+| `AUTOPILOT_BW_SYNC_TTL_MINUTES` | `30` | How stale the local snapshot may get before a read re-syncs. |
+| `AUTOPILOT_BW_SERVE_STARTUP_SECONDS` | `45` | How long to wait for `bw serve` to answer `/status`. |
+| `AUTOPILOT_BW_STATE_DIR` | `./data` | Where sibling MCP processes rendezvous on one shared daemon. |
 | `AUTOPILOT_FILE_SERVER_HOST` | `127.0.0.1` | Bind interface for the local file server. |
 | `AUTOPILOT_FILE_SERVER_PORT` | `0` | Bind port for the local file server (`0` = ephemeral). |
 | `AUTOPILOT_LOG_JSON` | `false` | `"true"` for JSON logs; otherwise human-readable console output. |

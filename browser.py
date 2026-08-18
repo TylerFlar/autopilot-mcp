@@ -7,7 +7,9 @@ browser does (app.example.com and www.example.com share `example.com`).
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -16,6 +18,13 @@ from camoufox.async_api import AsyncCamoufox
 
 DATA_DIR = Path(__file__).parent / "data" / "profiles"
 HEADLESS = os.environ.get("HEADLESS", "true").lower() == "true"
+# Persistent-profile contexts untouched this long are closed (cookies live on
+# disk; the next tool call relaunches). This is what stops a days-old session
+# from holding camoufox processes and profile locks forever — the 2026-08-14
+# leak audit found browsers from four-day-old sessions still running. Idle
+# instances (spawn_instance clones) are exempt: they have their own lifecycle.
+# 0 disables.
+IDLE_PROFILE_SECONDS = float(os.environ.get("AUTOPILOT_IDLE_PROFILE_MINUTES", "20")) * 60
 # Playwright action timeout in ms. Applied via both set_default_timeout
 # (selector waits, fill, click) AND set_default_navigation_timeout
 # (page.goto, page.reload) — the two are independent in Playwright, and
@@ -61,7 +70,26 @@ class BrowserManager:
         self._contexts: dict[str, object] = {}
         self._pages: dict[str, object] = {}
         self._cms: dict[str, object] = {}
+        self._last_used: dict[str, float] = {}
+        self._reaper: object | None = None
         self.headless = headless if headless is not None else HEADLESS
+
+    def _touch(self, profile: str) -> None:
+        self._last_used[profile] = time.monotonic()
+        if IDLE_PROFILE_SECONDS > 0 and (self._reaper is None or self._reaper.done()):
+            self._reaper = asyncio.create_task(self._reap_idle())
+
+    async def _reap_idle(self) -> None:
+        """Close persistent contexts nobody has touched in IDLE_PROFILE_SECONDS."""
+        while True:
+            await asyncio.sleep(60)
+            now = time.monotonic()
+            for profile in list(self._cms):
+                if "__inst_" in profile:
+                    continue  # instances are closed by close_instance/atexit
+                last = self._last_used.get(profile, now)
+                if now - last > IDLE_PROFILE_SECONDS:
+                    await self.close_profile(profile)
 
     async def get_page(self, profile: str):
         """Get or create a browser page for the given profile.
@@ -72,15 +100,29 @@ class BrowserManager:
         """
         if not profile:
             raise ValueError("get_page: profile is required")
+        self._touch(profile)
         if profile in self._pages:
             page = self._pages[profile]
+            # `page.url` is answered from the client-side cache, so it stays
+            # healthy after the driver has died (e.g. the browser tree was
+            # killed externally to free a profile for manual_login.py) and the
+            # stale page then poisons every later call. Only a real round-trip
+            # proves the driver: instant hard error = dead (rebuild from
+            # disk); a slow answer = merely busy (still alive).
             try:
-                _ = page.url
+                await asyncio.wait_for(page.title(), timeout=3)
+                return page
+            except (TimeoutError, asyncio.TimeoutError):
                 return page
             except Exception:
-                del self._pages[profile]
+                self._pages.pop(profile, None)
                 self._contexts.pop(profile, None)
-                self._cms.pop(profile, None)
+                cm = self._cms.pop(profile, None)
+                if cm:
+                    try:
+                        await cm.__aexit__(None, None, None)
+                    except Exception:
+                        pass
 
         profile_dir = str(DATA_DIR / profile)
         os.makedirs(profile_dir, exist_ok=True)
@@ -117,6 +159,7 @@ class BrowserManager:
         cm = self._cms.pop(profile, None)
         self._pages.pop(profile, None)
         self._contexts.pop(profile, None)
+        self._last_used.pop(profile, None)
         if cm:
             try:
                 await cm.__aexit__(None, None, None)

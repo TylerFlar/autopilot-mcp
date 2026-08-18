@@ -325,10 +325,14 @@ class PlaybookManager:
                            # tool's semantics.
             fill_login:   {"action": "fill_login", "url": "...",
                            "vault_item"?: "...",
+                           "account"?: "user@example.com",
                            "username_selector"?: "...",
                            "password_selector"?: "...",
                            "password_mode"?: "value"|"keystroke",
                            "skip_username"?: bool}
+                           # account picks between vault entries sharing this
+                           # URL (one per account on the site); without it an
+                           # ambiguous URL raises instead of guessing.
                            # skip_username=true fills only the password —
                            # for remembered-username pages where the
                            # username is pre-populated in a combobox and
@@ -596,6 +600,7 @@ class PlaybookManager:
                         vault_item=step.get("vault_item"),
                         password_mode=step.get("password_mode", "value"),
                         skip_username=bool(step.get("skip_username", False)),
+                        account=step.get("account"),
                     )
                     results.append({
                         "step": i,

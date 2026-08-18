@@ -24,6 +24,35 @@ import logging_setup  # noqa: E402
 logging_setup.configure()
 
 
+@pytest.fixture(autouse=True)
+def _default_cli_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the legacy CLI transport unless a test opts into serve.
+
+    Without this the default "auto" mode would try to spawn a real
+    `bw serve` daemon (Popen, not the mocked subprocess.run) from every
+    test that builds a BitwardenClient.
+    """
+    monkeypatch.setenv("AUTOPILOT_BW_TRANSPORT", "cli")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_serve_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Give each test its own daemon-rendezvous directory.
+
+    The shared state file is how sibling MCP processes find one running
+    `bw serve`. Left pointing at the real data dir, tests would adopt each
+    other's fake daemons — and worse, leave a state file behind that a live
+    MCP would then try to adopt.
+    """
+    import credentials
+
+    state_dir = tmp_path / "bw-state"
+    state_dir.mkdir()
+    monkeypatch.setattr(credentials, "SERVE_STATE_DIR", state_dir)
+    monkeypatch.setattr(credentials, "SERVE_STATE_PATH", state_dir / "bw-serve.json")
+    monkeypatch.setattr(credentials, "SERVE_LOCK_PATH", state_dir / "bw-serve.lock")
+
+
 @pytest.fixture
 def mock_subprocess(monkeypatch: pytest.MonkeyPatch) -> types.SimpleNamespace:
     """Intercept credentials.subprocess.run. Tests set canned responses keyed

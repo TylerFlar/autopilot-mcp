@@ -119,8 +119,18 @@ Handling login pages:
   get_totp(vault_item)          current 6-digit 2FA code (short-lived)
   list_logins(query)            search vault (no passwords ever returned)
   reveal_credentials(item, reason)  escape hatch when fill_login can't target
+  vault_status()                lock state, item count, snapshot staleness
+
+Several vault entries can share one site (one per account). Pass
+`account="<username or email>"` to fill_login / get_totp to choose; an
+ambiguous lookup lists every candidate's id and username rather than guessing.
+Only entries whose list_logins row says has_totp:true can produce a TOTP —
+everything else uses SMS, email, or a push/passkey prompt.
 
 Signing up and want to remember the creds? Use upsert_login(url, user, pw).
+
+Keyboard: press_key(profile, "Enter") sends a real key event. Don't hand-roll
+`new KeyboardEvent(...)` in run_js — those are untrusted and widely ignored.
 
 SMS 2FA? navigate("https://messages.example.com/web/") and read the code —
 the Messages profile is auth-persisted via its own browser profile.
@@ -257,6 +267,54 @@ def _atexit_close_instances() -> None:
 
 
 atexit.register(_atexit_close_instances)
+
+
+# ---------------------------------------------------------------------------
+# JS evaluation
+# ---------------------------------------------------------------------------
+
+# Playwright evaluates a plain string as an *expression*, so a script written
+# as a statement block — the natural way to write anything non-trivial — dies
+# on `return not in function` or `await is only valid in async functions`.
+# Those two accounted for the single largest class of failed autopilot calls
+# in the 2026-08 transcript audit (~420 wasted calls), every one of them
+# recoverable by wrapping the body in an async IIFE. So: wrap when the script
+# obviously needs it, and retry wrapped when the raw form fails that way.
+_JS_FUNCTION_RE = re.compile(r"^\s*(?:async\s+)?(?:function\b|\(|[\w$]+\s*=>)")
+_JS_NEEDS_WRAP_RE = re.compile(r"(?:^|[\s;{}])(?:return|await)\b")
+_JS_WRAPPABLE_ERRORS = (
+    "return not in function",
+    "illegal return statement",
+    "await is only valid in async",
+    "unexpected token 'return'",
+    "unexpected keyword 'await'",
+)
+
+
+def _wrap_js(script: str) -> str:
+    return f"(async () => {{\n{script}\n}})()"
+
+
+def _js_wrappable_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(needle in message for needle in _JS_WRAPPABLE_ERRORS)
+
+
+async def _eval_js(page: Any, script: str) -> str:
+    """page.evaluate with statement-body scripts handled transparently."""
+    body = script.strip()
+    if not _JS_FUNCTION_RE.match(body) and _JS_NEEDS_WRAP_RE.search(body):
+        result = await page.evaluate(_wrap_js(body))
+    else:
+        try:
+            result = await page.evaluate(body)
+        except Exception as exc:  # noqa: BLE001 - playwright raises Error subclasses
+            if not _js_wrappable_error(exc):
+                raise
+            result = await page.evaluate(_wrap_js(body))
+    if result is None:
+        return "OK (no return value)"
+    return str(result)
 
 
 # ---------------------------------------------------------------------------
@@ -425,13 +483,14 @@ async def instance_get_url(instance_id: str) -> str:
 @mcp.tool()
 @_with_tool_timeout()
 async def instance_run_js(instance_id: str, script: str) -> str:
-    """Run JavaScript in a spawned instance and return the stringified result."""
+    """Run JavaScript in a spawned instance and return the stringified result.
+
+    Expressions and statement bodies both work — a script using `return` or
+    top-level `await` is wrapped in an async IIFE for you.
+    """
     profile = await _profile_for_instance(instance_id)
     page = await browser_mgr.get_page(profile)
-    result = await page.evaluate(script)
-    if result is None:
-        return "OK (no return value)"
-    return str(result)
+    return await _eval_js(page, script)
 
 
 @mcp.tool()
@@ -454,6 +513,15 @@ async def instance_type_text(instance_id: str, text: str) -> str:
     page = await browser_mgr.get_page(profile)
     await page.keyboard.type(text)
     return f"Typed {len(text)} characters"
+
+
+@mcp.tool()
+@_with_tool_timeout()
+async def instance_press_key(instance_id: str, key: str, selector: str = "") -> str:
+    """Press a key in a spawned instance. See press_key for key names."""
+    profile = await _profile_for_instance(instance_id)
+    page = await browser_mgr.get_page(profile)
+    return await _press_key(page, key, selector)
 
 
 @mcp.tool()
@@ -577,15 +645,15 @@ async def run_js(profile: str, script: str) -> str:
     over click() for form filling and button activation — CSS/DOM selectors
     are robust to viewport size.
 
+    Expressions and statement bodies both work — a script using `return` or
+    top-level `await` is wrapped in an async IIFE for you.
+
     Args:
         profile: eTLD+1 string.
-        script: JavaScript expression or statement to evaluate.
+        script: JavaScript expression or statement body to evaluate.
     """
     page = await browser_mgr.get_page(profile)
-    result = await page.evaluate(script)
-    if result is None:
-        return "OK (no return value)"
-    return str(result)
+    return await _eval_js(page, script)
 
 
 @mcp.tool()
@@ -618,6 +686,39 @@ async def type_text(profile: str, text: str) -> str:
     page = await browser_mgr.get_page(profile)
     await page.keyboard.type(text)
     return f"Typed {len(text)} characters"
+
+
+async def _press_key(page: Any, key: str, selector: str = "") -> str:
+    """Shared body for press_key / instance_press_key."""
+    if not key or not key.strip():
+        return "Error: key is required (e.g. 'Enter', 'Tab', 'Escape')"
+    key = key.strip()
+    if selector:
+        await page.press(selector, key)
+        target = f"{selector!r}"
+    else:
+        await page.keyboard.press(key)
+        target = "the focused element"
+    await asyncio.sleep(0.5)
+    return f"Pressed {key!r} on {target}. Current URL: {page.url}"
+
+
+@mcp.tool()
+@_with_tool_timeout()
+async def press_key(profile: str, key: str, selector: str = "") -> str:
+    """Press a real key. Use this instead of synthesising KeyboardEvents in
+    run_js — dispatched events have ``isTrusted: false`` and most search
+    boxes, comboboxes, and form submits ignore them.
+
+    Args:
+        profile: eTLD+1 string.
+        key: Playwright key name — 'Enter', 'Tab', 'Escape', 'Backspace',
+             'ArrowDown', 'PageDown', or a chord like 'Control+A'.
+        selector: Optional CSS selector to focus first; omit to send the key
+             to whatever currently has focus.
+    """
+    page = await browser_mgr.get_page(profile)
+    return await _press_key(page, key, selector)
 
 
 @mcp.tool()
@@ -672,8 +773,12 @@ async def scroll(profile: str, direction: str = "down") -> str:
 @mcp.tool()
 @_with_tool_timeout()
 async def list_logins(query: str = "") -> str:
-    """Search Bitwarden for saved logins. Returns id, name, urls, username
-    for each match — NEVER the password. `query=""` lists everything.
+    """Search Bitwarden for saved logins. Returns id, name, urls, username,
+    has_totp for each match — NEVER the password. `query=""` lists everything.
+
+    `has_totp` tells you whether get_totp can produce a code for that entry;
+    most entries store no TOTP seed, and their second factor is SMS/email/push
+    instead.
 
     Args:
         query: Free-text search across name/url/username.
@@ -684,6 +789,7 @@ async def list_logins(query: str = "") -> str:
             "id": it.get("id"),
             "name": it.get("name"),
             "username": (it.get("login") or {}).get("username"),
+            "has_totp": bool(((it.get("login") or {}).get("totp") or "").strip()),
             "urls": [
                 u.get("uri") for u in (it.get("login") or {}).get("uris") or []
             ],
@@ -695,18 +801,36 @@ async def list_logins(query: str = "") -> str:
 
 @mcp.tool()
 @_with_tool_timeout()
+async def vault_status(sync: bool = False) -> str:
+    """Bitwarden health: transport, lock state, item count, how stale the
+    local snapshot is. Call this when a credential you expect is missing —
+    a large sync_age_minutes means the vault hasn't pulled the user's recent
+    additions yet, and `sync=True` forces a refresh.
+
+    Args:
+        sync: Force a server sync before reporting.
+    """
+    if sync:
+        await asyncio.to_thread(bw.sync)
+    return json.dumps(await asyncio.to_thread(bw.vault_status), indent=2)
+
+
+@mcp.tool()
+@_with_tool_timeout()
 async def fill_login(
     url: str,
     username_selector: str = "",
     password_selector: str = "",
     vault_item: str = "",
     password_mode: str = "",
+    account: str = "",
 ) -> str:
     """Fill a login form with a Bitwarden entry. Preferred over typing the
     password yourself — the password is injected into the DOM and never
     returns to you.
 
-    Matching: `vault_item` (name or id) takes precedence; else match by url.
+    Matching: `vault_item` (name or id) takes precedence; else match by url,
+    narrowed by `account` when several entries share that site.
 
     Selectors are auto-detected if omitted: password goes to the first
     input[type=password]; username tries input[autocomplete=username], then
@@ -721,6 +845,8 @@ async def fill_login(
         password_mode: 'value' (default) fills via DOM. 'keystroke' focuses
              the password field, clears it, and types via real key events —
              needed for frameworks (e.g. Broker) that ignore .value fills.
+        account: Username/email to pick between entries sharing this URL
+             (e.g. which Google account). Ambiguity errors list the choices.
     """
     profile = resolve_profile(url)
     page = await browser_mgr.get_page(profile)
@@ -732,36 +858,44 @@ async def fill_login(
         password_selector=password_selector or None,
         vault_item=vault_item or None,
         password_mode=password_mode or "value",
+        account=account or None,
     )
     return json.dumps(result)
 
 
 @mcp.tool()
 @_with_tool_timeout()
-async def get_totp(vault_item: str) -> str:
-    """Current 6-digit TOTP for a Bitwarden item. Bitwarden is the single
-    source of truth for TOTP secrets. Codes are ~30s; call right before you
-    need to paste.
+async def get_totp(vault_item: str, account: str = "") -> str:
+    """Current 6-digit TOTP for a Bitwarden item. Codes are ~30s; call right
+    before you need to paste.
+
+    Only entries with `has_totp: true` in list_logins can produce a code —
+    check there first rather than calling this speculatively. An account whose
+    2FA is SMS, email, or a push/passkey prompt has no seed here.
 
     Args:
         vault_item: Vault item name or id.
+        account: Username/email, when several entries share that name/url.
     """
-    return await asyncio.to_thread(bw.get_totp, vault_item)
+    return await asyncio.to_thread(bw.get_totp, vault_item, account or None)
 
 
 @mcp.tool()
 @_with_tool_timeout()
-async def reveal_credentials(vault_item: str, reason: str) -> str:
+async def reveal_credentials(vault_item: str, reason: str, account: str = "") -> str:
     """ESCAPE HATCH — returns plaintext username + password. Only use when
     fill_login can't target the form. `reason` is mandatory and audited.
 
     Args:
         vault_item: Vault item name or id.
         reason: 1+ sentence explanation of why plaintext is needed.
+        account: Username/email, when several entries share that name/url.
     """
     if not reason or not reason.strip():
         return "Error: reason must be a non-empty explanation"
-    result = await asyncio.to_thread(_credentials.reveal_credentials, bw, vault_item, reason)
+    result = await asyncio.to_thread(
+        _credentials.reveal_credentials, bw, vault_item, reason, account or None
+    )
     return json.dumps(result)
 
 
@@ -1183,4 +1317,23 @@ async def delete_playbook(name: str) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    import lifecycle
+
+    # Browsers must never outlive the session that opened them (2026-08-14
+    # leak audit: camoufox trees from four-day-old sessions still running).
+    # Job object = children die with this process however it dies; the
+    # ancestor watch exits when the wrapper python or the MCP client goes away;
+    # the exit bomb bounds a wedged graceful shutdown. Idle-profile reaping
+    # is in BrowserManager.
+    lifecycle.adopt_kill_on_close_job()
+    lifecycle.watch_ancestors()
+    try:
+        mcp.run(transport="stdio")
+    finally:
+        lifecycle.force_exit_after(20.0)
+        try:
+            asyncio.run(browser_mgr.close_all())
+        except Exception:
+            pass
+    # Falling off the end lets atexit run (instance cleanup, file server,
+    # Bitwarden lock); if any of it hangs, the exit bomb finishes the job.
