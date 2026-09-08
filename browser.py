@@ -8,8 +8,10 @@ browser does (app.example.com and www.example.com share `example.com`).
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
+from dataclasses import asdict, fields
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -60,6 +62,128 @@ def resolve_profile(url: str) -> str:
     if not host:
         raise ValueError(f"resolve_profile: cannot derive profile from {url!r}")
     return host
+
+
+# --- Per-profile device-fingerprint pinning --------------------------------
+# Camoufox synthesises a fresh RANDOM device fingerprint (user-agent, OS,
+# screen, WebGL renderer, canvas noise, font metrics) on EVERY context launch.
+# A profile's context is relaunched after every idle reap and every MCP
+# (re)start, so without pinning, the "device" a profile presents churns
+# constantly -- it flips OS and browser version between calls (verified: two
+# back-to-back default launches gave Firefox 135 on Windows and Firefox 135 on
+# Linux). Sites that bind "remember this device" to a browser fingerprint --
+# bank hardware-token challenges most sharply -- then re-challenge on nearly
+# every headless run, and long-lived sessions get invalidated early.
+# Pinning one fingerprint per profile on first use, and reusing it forever,
+# makes each profile present a stable device so saved device-trust actually
+# holds. The headed manual-login path and the headless daemon share the pinned
+# fingerprint, so a device trusted during a hand sign-in is the same device the
+# daemon presents afterwards. Degrades silently to Camoufox's default random
+# fingerprint on any error -- browsing must never break because of this.
+FINGERPRINT_FILENAME = "camoufox_fingerprint.json"
+# The host is Windows; pin to a Windows device so the fingerprint matches the
+# real machine and never flips to a Linux/macOS UA between launches.
+PIN_FINGERPRINT_OS = os.environ.get("AUTOPILOT_FINGERPRINT_OS", "windows")
+
+
+def _rehydrate_fingerprint(data: dict):
+    """Rebuild a BrowserForge Fingerprint from the persisted asdict() form."""
+    from browserforge.fingerprints import (
+        Fingerprint,
+        NavigatorFingerprint,
+        ScreenFingerprint,
+        VideoCard,
+    )
+
+    def _mk(cls, value):
+        if not value:
+            return None
+        allowed = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in value.items() if k in allowed})
+
+    data = dict(data)
+    data["screen"] = _mk(ScreenFingerprint, data.get("screen"))
+    data["navigator"] = _mk(NavigatorFingerprint, data.get("navigator"))
+    data["videoCard"] = _mk(VideoCard, data.get("videoCard"))
+    allowed = {f.name for f in fields(Fingerprint)}
+    return Fingerprint(**{k: v for k, v in data.items() if k in allowed})
+
+
+def _build_pinned_fingerprint() -> dict:
+    """Generate one stable fingerprint and its fully-resolved Camoufox config.
+
+    Persisting BOTH the Fingerprint and the resolved config is what makes reuse
+    byte-identical: passing the Fingerprint stops Camoufox re-running its random
+    generator (which would fill any missing key with fresh randomness), and the
+    saved config pins the post-generation noise (WebGL/canvas/fonts/window).
+    """
+    from camoufox.fingerprints import generate_fingerprint
+    from camoufox.utils import get_screen_cons, launch_options
+
+    fp = generate_fingerprint(screen=get_screen_cons(True), os=PIN_FINGERPRINT_OS)
+    opts = launch_options(
+        headless=True,
+        os=PIN_FINGERPRINT_OS,
+        fingerprint=fp,
+        i_know_what_im_doing=True,
+        env={},
+    )
+    chunks = sorted(
+        (int(key.rsplit("_", 1)[1]), value)
+        for key, value in opts["env"].items()
+        if key.startswith("CAMOU_CONFIG_")
+    )
+    config = json.loads("".join(value for _, value in chunks))
+    return {
+        "config": config,
+        "firefox_user_prefs": opts.get("firefox_user_prefs", {}),
+        "fingerprint": asdict(fp),
+    }
+
+
+def _load_or_create_profile_fingerprint(profile_dir: str) -> dict:
+    """The pinned fingerprint bundle for a profile, generating it on first use."""
+    path = os.path.join(profile_dir, FINGERPRINT_FILENAME)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, dict) and {
+            "config",
+            "firefox_user_prefs",
+            "fingerprint",
+        } <= data.keys():
+            return data
+    except (OSError, ValueError):
+        pass
+
+    data = _build_pinned_fingerprint()
+    tmp = f"{path}.tmp.{os.getpid()}"
+    try:
+        os.makedirs(profile_dir, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(data, handle)
+        os.replace(tmp, path)  # atomic; a concurrent first-launch race is benign
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    return data
+
+
+def _profile_fingerprint_overrides(profile_dir: str) -> dict:
+    """Launch kwargs pinning this profile's device fingerprint, or {} on any
+    failure (in which case Camoufox falls back to its default random device)."""
+    try:
+        data = _load_or_create_profile_fingerprint(profile_dir)
+        return {
+            "config": data["config"],
+            "firefox_user_prefs": data["firefox_user_prefs"],
+            "fingerprint": _rehydrate_fingerprint(data["fingerprint"]),
+            "i_know_what_im_doing": True,
+        }
+    except Exception:
+        return {}
 
 
 class BrowserManager:
@@ -127,6 +251,13 @@ class BrowserManager:
         profile_dir = str(DATA_DIR / profile)
         os.makedirs(profile_dir, exist_ok=True)
 
+        # Pin the profile's device fingerprint so it stops churning between
+        # launches (see the module-level notes). One-time generation reads a
+        # yaml + a small sqlite sample, so run it off the event loop; the
+        # cached path is a tiny file read. Returns {} on any failure, leaving
+        # Camoufox's default (random) behaviour intact.
+        fp_overrides = await asyncio.to_thread(_profile_fingerprint_overrides, profile_dir)
+
         # ``humanize=True`` synthesises human-like mouse trails before
         # actions. In headless mode there's no viewport to trace —
         # Camoufox's humanize logic is known to stall inside Playwright's
@@ -143,6 +274,7 @@ class BrowserManager:
             user_data_dir=profile_dir,
             humanize=not self.headless,
             headless=self.headless,
+            **fp_overrides,
         )
         context = await cm.__aenter__()
         self._cms[profile] = cm
