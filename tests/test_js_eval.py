@@ -120,6 +120,76 @@ async def test_none_result_reports_no_return_value() -> None:
     assert await server._eval_js(FakePage(result=None), "void 0") == "OK (no return value)"
 
 
+@pytest.mark.asyncio
+async def test_statement_list_without_return_is_retried_wrapped() -> None:
+    """`const a = ...; a.click()` has no `return`/`await` for the heuristic to see;
+    as a parenthesised expression Firefox rejects it with "missing ) in
+    parenthetical" -- fifty times in the 2026-09 audit."""
+
+    class FirefoxPage(FakePage):
+        async def evaluate(self, script: str) -> object:
+            self.scripts.append(script)
+            if not script.startswith("(async () =>"):
+                raise RuntimeError(
+                    "Page.evaluate: missing ) in parenthetical\n"
+                    "evaluate@debugger eval code:290:30\n@debugger eval code:1:44"
+                )
+            return self.result
+
+    page = FirefoxPage(result=None)
+    out = await server._eval_js(page, "const a = document.querySelector('a');\na.click();")
+
+    assert out == "OK (no return value)"
+    assert len(page.scripts) == 2
+    assert page.scripts[1].startswith("(async () =>")
+
+
+@pytest.mark.asyncio
+async def test_destroyed_context_waits_for_the_new_page_and_retries_once() -> None:
+    """The call before this one navigated; the script ran against the old document."""
+
+    class NavigatingPage(FakePage):
+        def __init__(self) -> None:
+            super().__init__(result="new page")
+            self.waits: list[str] = []
+
+        async def evaluate(self, script: str) -> object:
+            self.scripts.append(script)
+            if len(self.scripts) == 1:
+                raise RuntimeError(
+                    "Page.evaluate: Execution context was destroyed, most likely "
+                    "because of a navigation."
+                )
+            return self.result
+
+        async def wait_for_load_state(self, state: str) -> None:
+            self.waits.append(state)
+
+    page = NavigatingPage()
+    out = await server._eval_js(page, "document.title")
+
+    assert out == "new page"
+    assert page.waits == ["domcontentloaded"]
+    assert page.scripts == ["document.title", "document.title"]
+
+
+@pytest.mark.asyncio
+async def test_destroyed_context_is_retried_only_once() -> None:
+    class AlwaysNavigatingPage(FakePage):
+        async def evaluate(self, script: str) -> object:
+            self.scripts.append(script)
+            raise RuntimeError("Page.evaluate: Execution context was destroyed")
+
+        async def wait_for_load_state(self, state: str) -> None:
+            pass
+
+    page = AlwaysNavigatingPage()
+    with pytest.raises(RuntimeError, match="Execution context was destroyed"):
+        await server._eval_js(page, "document.title")
+
+    assert len(page.scripts) == 2
+
+
 # --- press_key --------------------------------------------------------------
 
 

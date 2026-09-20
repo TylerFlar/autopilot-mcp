@@ -289,7 +289,18 @@ _JS_WRAPPABLE_ERRORS = (
     "await is only valid in async",
     "unexpected token 'return'",
     "unexpected keyword 'await'",
+    # A statement list with neither `return` nor `await` (`const a = ...; a.click()`)
+    # slips past the heuristic; evaluated as a parenthesised expression it is a
+    # syntax error, phrased by SpiderMonkey (Firefox, hence Camoufox) as the first
+    # two and by V8 as the third. Fifty such failures in the 2026-09 transcript
+    # audit, the largest single class of failed tool calls that month.
+    "missing ) in parenthetical",
+    "missing ; before statement",
+    "unexpected token",
 )
+# The previous call (a click that submitted a form, a location change) navigated
+# the page, and the script ran against the document that was just torn down.
+_JS_CONTEXT_DESTROYED = "execution context was destroyed"
 
 
 def _wrap_js(script: str) -> str:
@@ -302,7 +313,28 @@ def _js_wrappable_error(exc: Exception) -> bool:
 
 
 async def _eval_js(page: Any, script: str) -> str:
-    """page.evaluate with statement-body scripts handled transparently."""
+    """page.evaluate with statement-body scripts and mid-navigation pages handled.
+
+    A script that lands while the page is navigating away (the call before it
+    clicked a submit button) dies with "execution context was destroyed"; every
+    one of the 26 such failures in the 2026-09 audit was followed by the model
+    waiting and re-issuing the identical call, so do that here, once.
+    """
+    try:
+        return await _eval_js_once(page, script)
+    except Exception as exc:  # noqa: BLE001 - playwright raises Error subclasses
+        if _JS_CONTEXT_DESTROYED not in str(exc).lower():
+            raise
+    wait_for_load_state = getattr(page, "wait_for_load_state", None)
+    if wait_for_load_state is not None:
+        try:
+            await wait_for_load_state("domcontentloaded")
+        except Exception:  # noqa: BLE001 - a slow page is not a reason to skip the retry
+            pass
+    return await _eval_js_once(page, script)
+
+
+async def _eval_js_once(page: Any, script: str) -> str:
     body = script.strip()
     if not _JS_FUNCTION_RE.match(body) and _JS_NEEDS_WRAP_RE.search(body):
         result = await page.evaluate(_wrap_js(body))
